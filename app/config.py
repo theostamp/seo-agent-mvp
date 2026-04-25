@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     WORDPRESS_USERNAME: str = ""
     WORDPRESS_APP_PASSWORD: str = ""
     WORDPRESS_TIMEOUT: int = 30
+    WORDPRESS_PER_PAGE: int = 100
+    WORDPRESS_MAX_PAGES: int = 20
 
     GENERATED_CONTENT_DIR: str = "generated_content"
 

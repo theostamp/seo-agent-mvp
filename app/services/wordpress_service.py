@@ -15,12 +15,14 @@ class WordPressService:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = (base_url or settings.WORDPRESS_BASE_URL).rstrip("/")
         self.timeout = settings.WORDPRESS_TIMEOUT
+        self.per_page = min(max(settings.WORDPRESS_PER_PAGE, 1), 100)
+        self.max_pages = max(settings.WORDPRESS_MAX_PAGES, 1)
         self.auth = HTTPBasicAuth(
             settings.WORDPRESS_USERNAME,
             settings.WORDPRESS_APP_PASSWORD,
         )
 
-    def _get(self, endpoint: str, params: dict | None = None) -> list[dict]:
+    def _get_response(self, endpoint: str, params: dict | None = None) -> requests.Response | None:
         url = f"{self.base_url}{endpoint}"
         try:
             response = requests.get(
@@ -30,52 +32,92 @@ class WordPressService:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            return response.json()
+            return response
         except requests.RequestException as e:
             logger.error("WordPress API error: %s", e)
+            return None
+
+    def _get(self, endpoint: str, params: dict | None = None) -> list[dict]:
+        response = self._get_response(endpoint, params)
+        if response is None:
             return []
 
-    def fetch_pages(self, per_page: int = 50, max_pages: int = 5) -> list[dict]:
-        all_pages: list[dict] = []
+        try:
+            data = response.json()
+        except ValueError:
+            logger.error("Invalid JSON from WordPress endpoint: %s", endpoint)
+            return []
+
+        return data if isinstance(data, list) else []
+
+    def _fetch_collection(
+        self,
+        endpoint: str,
+        post_type: str,
+        per_page: int | None = None,
+        max_pages: int | None = None,
+    ) -> list[dict]:
+        items: list[dict] = []
         page = 1
+        per_page = min(max(per_page or self.per_page, 1), 100)
+        max_pages = max(max_pages or self.max_pages, 1)
 
         while page <= max_pages:
-            raw = self._get(
-                "/wp-json/wp/v2/pages",
+            response = self._get_response(
+                endpoint,
                 params={"per_page": per_page, "page": page, "status": "publish"},
             )
+            if response is None:
+                break
+
+            try:
+                raw = response.json()
+            except ValueError:
+                logger.error("Invalid JSON from WordPress endpoint: %s page %d", endpoint, page)
+                break
+            if not isinstance(raw, list):
+                logger.warning("Unexpected WordPress response for %s page %d", endpoint, page)
+                break
+
             if not raw:
                 break
 
             for item in raw:
-                all_pages.append(self._parse_wp_item(item, "page"))
+                items.append(self._parse_wp_item(item, post_type))
 
-            if len(raw) < per_page:
+            total_pages_header = response.headers.get("X-WP-TotalPages")
+            total_pages = int(total_pages_header) if total_pages_header and total_pages_header.isdigit() else None
+            if (total_pages and page >= total_pages) or len(raw) < per_page:
                 break
+
             page += 1
 
+        if page > max_pages:
+            logger.warning(
+                "Stopped fetching %s at configured WORDPRESS_MAX_PAGES=%d",
+                endpoint,
+                max_pages,
+            )
+
+        return items
+
+    def fetch_pages(self, per_page: int | None = None, max_pages: int | None = None) -> list[dict]:
+        all_pages = self._fetch_collection(
+            "/wp-json/wp/v2/pages",
+            "page",
+            per_page=per_page,
+            max_pages=max_pages,
+        )
         logger.info("Fetched %d pages from WordPress", len(all_pages))
         return all_pages
 
-    def fetch_posts(self, per_page: int = 50, max_pages: int = 5) -> list[dict]:
-        all_posts: list[dict] = []
-        page = 1
-
-        while page <= max_pages:
-            raw = self._get(
-                "/wp-json/wp/v2/posts",
-                params={"per_page": per_page, "page": page, "status": "publish"},
-            )
-            if not raw:
-                break
-
-            for item in raw:
-                all_posts.append(self._parse_wp_item(item, "post"))
-
-            if len(raw) < per_page:
-                break
-            page += 1
-
+    def fetch_posts(self, per_page: int | None = None, max_pages: int | None = None) -> list[dict]:
+        all_posts = self._fetch_collection(
+            "/wp-json/wp/v2/posts",
+            "post",
+            per_page=per_page,
+            max_pages=max_pages,
+        )
         logger.info("Fetched %d posts from WordPress", len(all_posts))
         return all_posts
 
@@ -99,9 +141,23 @@ class WordPressService:
     def fetch_categories(self) -> dict[int, str]:
         """Fetch all categories and return id->name mapping."""
         categories = {}
-        raw = self._get("/wp-json/wp/v2/categories", params={"per_page": 100})
-        for cat in raw:
-            categories[cat.get("id")] = cat.get("name", "")
+        page = 1
+
+        while page <= self.max_pages:
+            raw = self._get(
+                "/wp-json/wp/v2/categories",
+                params={"per_page": 100, "page": page},
+            )
+            if not raw:
+                break
+
+            for cat in raw:
+                categories[cat.get("id")] = cat.get("name", "")
+
+            if len(raw) < 100:
+                break
+            page += 1
+
         logger.info("Fetched %d categories from WordPress", len(categories))
         return categories
 

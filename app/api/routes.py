@@ -20,6 +20,10 @@ from app.schemas import (
 )
 from app.services.content_generator import ContentGenerator
 from app.services.proposal_service import ProposalService
+from app.services.schema_analyzer import SchemaAnalyzer
+from app.services.topology_service import TopologyService
+from app.services.wordpress_service import WordPressService
+from app.services.yoast_service import YoastService
 
 
 class GenerateHtmlRequest(BaseModel):
@@ -42,6 +46,80 @@ VALID_PROPOSAL_STATUSES = {"needs_review", "approved", "rejected"}
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "seo-agent-mvp"}
+
+
+@router.get("/site/audit")
+def audit_site(site_url: str | None = None, include_pages: bool = False) -> dict:
+    """
+    Run a fast deterministic site audit without generating proposals.
+    This reads WordPress content and returns topology, Yoast, and schema summaries.
+    """
+    logger.info("Starting site audit for site: %s", site_url or "default")
+
+    try:
+        wp = WordPressService(base_url=site_url)
+        site_pages = wp.fetch_all_content()
+        categories = wp.fetch_categories()
+
+        topology_service = TopologyService()
+        topology = topology_service.analyze_topology(site_pages, categories)
+
+        yoast_service = YoastService()
+        yoast_analysis = yoast_service.analyze_seo_data(site_pages)
+
+        schema_analysis = SchemaAnalyzer().analyze_schemas(site_pages)
+        post_type_counts: dict[str, int] = {}
+        for page in site_pages:
+            post_type = page.get("post_type", "unknown")
+            post_type_counts[post_type] = post_type_counts.get(post_type, 0) + 1
+
+        audit = {
+            "site_url": site_url or wp.base_url,
+            "site_pages_found": len(site_pages),
+            "post_type_counts": post_type_counts,
+            "topology": {
+                "homepage": topology.get("homepage"),
+                "pillars_count": len(topology.get("pillars", [])),
+                "satellites_count": len(topology.get("satellites", [])),
+                "orphans_count": len(topology.get("orphans", [])),
+                "orphan_pages": [
+                    {"title": p.get("title"), "slug": p.get("slug")}
+                    for p in topology.get("orphans", [])[:20]
+                ],
+            },
+            "yoast": {
+                "pages_with_yoast": yoast_analysis.get("pages_with_yoast", 0),
+                "pages_without_yoast": yoast_analysis.get("pages_without_yoast", 0),
+                "total_issues": yoast_analysis.get("total_issues", 0),
+                "issue_summary": yoast_analysis.get("issue_summary", {}),
+                "priority_pages": yoast_service.get_optimization_priorities(yoast_analysis),
+            },
+            "schema": {
+                "pages_with_schema": schema_analysis.get("pages_with_schema", 0),
+                "schema_coverage_percent": schema_analysis.get("schema_coverage_percent", 0),
+                "ai_readiness_score": schema_analysis.get("ai_readiness_score", 0),
+                "schema_types_found": schema_analysis.get("schema_types_found", {}),
+                "improvement_suggestions": schema_analysis.get("improvement_suggestions", [])[:10],
+            },
+        }
+
+        if include_pages:
+            audit["pages"] = [
+                {
+                    "title": page.get("title"),
+                    "slug": page.get("slug"),
+                    "url": page.get("url"),
+                    "post_type": page.get("post_type"),
+                    "has_yoast": page.get("yoast", {}).get("available", False),
+                    "schema_types": page.get("yoast", {}).get("schema_types", []),
+                }
+                for page in site_pages
+            ]
+
+        return audit
+    except Exception as e:
+        logger.exception("Site audit failed")
+        raise HTTPException(status_code=500, detail=f"Site audit failed: {str(e)}")
 
 
 @router.post("/workflow/run", response_model=WorkflowOutput)
@@ -255,6 +333,9 @@ def get_proposal_preview(proposal_id: int, db: Session = Depends(get_db)) -> dic
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found")
 
+    workflow_run = db.query(WorkflowRun).filter(WorkflowRun.id == proposal.workflow_run_id).first()
+    site_url = workflow_run.site_url if workflow_run else None
+
     logger.info("Generating preview for proposal %d: %s", proposal_id, proposal.proposal_type)
 
     try:
@@ -271,6 +352,7 @@ def get_proposal_preview(proposal_id: int, db: Session = Depends(get_db)) -> dic
             "schema_additions": proposal.schema_additions,
             "seo_meta_suggestions": proposal.seo_meta_suggestions,
             "priority": proposal.priority,
+            "site_url": site_url,
         }
 
         preview = content_generator.generate_preview(proposal_dict)

@@ -172,7 +172,10 @@ class ContentGenerator:
 
     def _get_cache_key(self, proposal: dict) -> str:
         """Generate a cache key for a proposal."""
-        key_data = f"{proposal.get('id')}:{proposal.get('proposal_type')}:{proposal.get('target_title')}"
+        key_data = (
+            f"{proposal.get('id')}:{proposal.get('proposal_type')}:"
+            f"{proposal.get('target_title')}:{proposal.get('site_url')}"
+        )
         return hashlib.md5(key_data.encode()).hexdigest()
 
     def generate_preview(self, proposal: dict, site_pages: list[dict] | None = None) -> dict:
@@ -197,11 +200,16 @@ class ContentGenerator:
         summary = proposal.get("summary", "")
         outline = proposal.get("outline", "")
         parent_pillar = proposal.get("parent_pillar")
+        site_url = proposal.get("site_url")
 
         # Fetch current page content if this is an update proposal
         current_page = None
         if "update" in proposal_type or "improve" in proposal_type:
-            current_page = self._find_page_by_title(target_title, site_pages)
+            current_page = self._find_page_by_title(
+                target_title,
+                site_pages,
+                site_url=site_url,
+            )
 
         # Build the generation request
         if proposal_type == "improve_seo_meta":
@@ -228,11 +236,14 @@ class ContentGenerator:
         return result
 
     def _find_page_by_title(
-        self, title: str, site_pages: list[dict] | None = None
+        self,
+        title: str,
+        site_pages: list[dict] | None = None,
+        site_url: str | None = None,
     ) -> dict | None:
         """Find a page by its title."""
         if not site_pages:
-            site_pages = self.wp.fetch_all_content()
+            site_pages = self.wp.fetch_all_content(site_url=site_url)
 
         title_lower = title.lower().strip()
         for page in site_pages:

@@ -23,9 +23,24 @@ class KeywordService:
         }
 
         result = self.llm_service.generate_json(KEYWORD_DISCOVERY_PROMPT, payload)
+        if not isinstance(result, dict):
+            result = {}
 
         keywords = result.get("keywords", [])
         clusters = result.get("clusters", [])
+        if not keywords:
+            keywords = seed_keywords or [category_name]
+            result["keywords"] = keywords
+
+        if not clusters:
+            clusters = [
+                {
+                    "name": category_name,
+                    "intent": "informational",
+                    "keywords": keywords,
+                }
+            ]
+            result["clusters"] = clusters
 
         logger.info(
             "Keyword discovery complete: category=%s, keywords=%d, clusters=%d",

@@ -73,7 +73,7 @@ def update_proposal_status(api_url: str, proposal_id: int, status: str) -> None:
 
 
 # Main tabs
-tab1, tab2, tab3 = st.tabs(["🚀 Νέα Ανάλυση", "📋 Proposals", "🔍 Preview"])
+tab1, tab2, tab3, tab4 = st.tabs(["🚀 Νέα Ανάλυση", "📋 Proposals", "🔍 Preview", "📊 Site Audit"])
 
 # Tab 1: New Analysis
 with tab1:
@@ -570,6 +570,81 @@ with tab3:
         if st.button("🗑️ Καθαρισμός", use_container_width=True):
             st.session_state.generated_html_result = None
             st.rerun()
+
+# Tab 4: Site Audit
+with tab4:
+    st.header("Site Audit")
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        audit_include_pages = st.checkbox("Εμφάνιση λίστας σελίδων", value=False)
+    with col2:
+        run_audit_btn = st.button("📊 Εκτέλεση Audit", type="primary", use_container_width=True)
+
+    if run_audit_btn:
+        with st.spinner("Γίνεται γρήγορος έλεγχος του site..."):
+            try:
+                response = requests.get(
+                    f"{api_url}/site/audit",
+                    params={"site_url": site_url, "include_pages": audit_include_pages},
+                    timeout=120,
+                )
+
+                if response.status_code == 200:
+                    audit = response.json()
+                    st.success(f"Audit ολοκληρώθηκε για {audit.get('site_url')}")
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Σελίδες", audit.get("site_pages_found", 0))
+                    col2.metric("Pillars", audit.get("topology", {}).get("pillars_count", 0))
+                    col3.metric("Yoast Issues", audit.get("yoast", {}).get("total_issues", 0))
+                    col4.metric("AI Readiness", f"{audit.get('schema', {}).get('ai_readiness_score', 0)}%")
+
+                    with st.expander("Topology", expanded=True):
+                        topology = audit.get("topology", {})
+                        st.write({
+                            "homepage": topology.get("homepage"),
+                            "satellites_count": topology.get("satellites_count"),
+                            "orphans_count": topology.get("orphans_count"),
+                        })
+                        orphan_pages = topology.get("orphan_pages", [])
+                        if orphan_pages:
+                            st.markdown("**Orphan pages:**")
+                            for page in orphan_pages:
+                                st.markdown(f"- `{page.get('slug')}` - {page.get('title')}")
+
+                    with st.expander("Yoast Priorities", expanded=True):
+                        priorities = audit.get("yoast", {}).get("priority_pages", [])
+                        if priorities:
+                            for item in priorities:
+                                st.markdown(f"- `{item.get('slug')}`: {item.get('issues_count', 0)} issues")
+                        else:
+                            st.info("Δεν βρέθηκαν Yoast priorities.")
+
+                    with st.expander("Schema Suggestions", expanded=True):
+                        schema = audit.get("schema", {})
+                        st.write({
+                            "coverage_percent": schema.get("schema_coverage_percent"),
+                            "types_found": schema.get("schema_types_found"),
+                        })
+                        for suggestion in schema.get("improvement_suggestions", []):
+                            st.markdown(
+                                f"- **{suggestion.get('priority', 'n/a')}** "
+                                f"`{suggestion.get('schema', suggestion.get('type', 'schema'))}`: "
+                                f"{suggestion.get('reason', '')}"
+                            )
+
+                    if audit_include_pages and audit.get("pages"):
+                        with st.expander("Pages", expanded=False):
+                            st.dataframe(audit.get("pages"), use_container_width=True)
+                else:
+                    st.error(f"Σφάλμα audit: {response.status_code} - {response.text}")
+            except requests.exceptions.Timeout:
+                st.error("Timeout - το audit πήρε πολύ χρόνο")
+            except requests.exceptions.ConnectionError:
+                st.error("Δεν μπορώ να συνδεθώ στο API")
+            except Exception as e:
+                st.error(f"Σφάλμα audit: {str(e)}")
 
 # Footer
 st.divider()

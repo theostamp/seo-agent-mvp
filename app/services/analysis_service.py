@@ -84,6 +84,15 @@ class AnalysisService:
             result = {"proposals": []}
 
         proposals = result.get("proposals", [])
+        if not proposals:
+            proposals = self._fallback_proposals(
+                category_name=category_name,
+                clusters=clusters,
+                yoast_analysis=yoast_analysis,
+                schema_analysis=schema_analysis,
+            )
+            result["proposals"] = proposals
+
         logger.info(
             "Gap analysis complete: category=%s, proposals=%d",
             category_name,
@@ -91,3 +100,78 @@ class AnalysisService:
         )
 
         return result
+
+    def _fallback_proposals(
+        self,
+        category_name: str,
+        clusters: list[dict],
+        yoast_analysis: dict | None,
+        schema_analysis: dict | None,
+    ) -> list[dict]:
+        """Create deterministic proposals when the LLM returns no usable output."""
+        proposals: list[dict] = []
+
+        for page in (yoast_analysis or {}).get("pages_analysis", [])[:3]:
+            if page.get("issues_count", 0) <= 0:
+                continue
+            proposals.append({
+                "proposal_type": "improve_seo_meta",
+                "target_title": page.get("title") or page.get("slug") or category_name,
+                "parent_pillar": None,
+                "summary": "Βελτίωση Yoast SEO metadata με βάση τα εντοπισμένα issues.",
+                "outline": [
+                    "Έλεγχος focus keyphrase",
+                    "Βελτίωση meta title",
+                    "Βελτίωση meta description",
+                    "Προσθήκη keyphrase στα βασικά σημεία της σελίδας",
+                ],
+                "suggested_schema": page.get("schema_types") or ["Article"],
+                "seo_meta_suggestions": {
+                    "issues": page.get("issues", []),
+                },
+                "priority": "high",
+            })
+
+        for suggestion in (schema_analysis or {}).get("improvement_suggestions", [])[:3]:
+            schema = suggestion.get("schema", "FAQPage")
+            proposal_type = "add_faq_section" if schema == "FAQPage" else "improve_schema"
+            proposals.append({
+                "proposal_type": proposal_type,
+                "target_title": suggestion.get("page_slug") or category_name,
+                "parent_pillar": None,
+                "summary": suggestion.get("reason") or f"Προσθήκη/βελτίωση schema {schema}.",
+                "outline": [
+                    "Έλεγχος υπάρχοντος structured data",
+                    f"Προσθήκη schema {schema}",
+                    "Έλεγχος απαιτούμενων properties",
+                ],
+                "suggested_schema": [schema],
+                "schema_additions": [schema],
+                "priority": suggestion.get("priority", "medium"),
+            })
+
+        if proposals:
+            return proposals[:5]
+
+        for cluster in clusters[:3]:
+            keywords = cluster.get("keywords", [])
+            target_title = cluster.get("name") or category_name
+            proposals.append({
+                "proposal_type": "create_satellite_post",
+                "target_title": target_title,
+                "parent_pillar": None,
+                "summary": "Fallback πρόταση δημιουργίας υποστηρικτικού περιεχομένου από keyword cluster.",
+                "outline": [
+                    "Σύντομη απάντηση στο βασικό ερώτημα",
+                    "Ανάλυση προβλήματος και λύσης",
+                    "Συχνές ερωτήσεις",
+                    "Internal links προς σχετικές υπηρεσίες",
+                ],
+                "suggested_schema": ["Article", "FAQPage"],
+                "priority": "medium",
+                "seo_meta_suggestions": {
+                    "focus_keywords": keywords,
+                },
+            })
+
+        return proposals
