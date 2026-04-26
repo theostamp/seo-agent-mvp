@@ -117,6 +117,14 @@ GAP_ANALYSIS_PROMPT_TEMPLATE = """
 4. Κάθε pillar πρέπει να έχει 3-5 satellites για καλό SEO
 5. Προτίμησε create_satellite_post αντί για update_pillar_page
 
+ΚΑΝΟΝΕΣ ΓΙΑ HOMEPAGE / ΑΡΧΙΚΗ ΣΕΛΙΔΑ:
+1. Η αρχική λειτουργεί ως κόμβος πλοήγησης, όχι ως αναλυτικό άρθρο
+2. Ιδανικό μήκος: 250-700 λέξεις, με σύντομες ενότητες
+3. Πρότεινε 4-8 internal links από την αρχική προς βασικά pillars/υπηρεσίες
+4. Αν λείπει CTA, πρότεινε σύντομο CTA σε hero και στο τέλος
+5. Για homepage proposals χρησιμοποίησε update_pillar_page ή link_existing_content, όχι create_satellite_post
+6. Μην προτείνεις FAQ/HowTo bulk sections στην αρχική εκτός αν υπάρχει ήδη αντίστοιχη δομή
+
 ΤΥΠΟΙ ΠΡΟΤΑΣΕΩΝ (κατά σειρά προτεραιότητας):
 - create_satellite_post: νέο δορυφορικό post για υπάρχον pillar (ΠΡΟΤΙΜΗΣΕ ΑΥΤΟ)
 - update_satellite_post: βελτίωση υπάρχοντος satellite

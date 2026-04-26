@@ -144,6 +144,7 @@ make up
 |--------|------|-----------|
 | GET | `/health` | Health check |
 | GET | `/site/audit` | Γρήγορο audit WordPress content, topology, Yoast και schema |
+| POST | `/site/cache/clear` | Καθαρισμός WordPress content/categories cache |
 | POST | `/workflow/run` | Εκτέλεση workflow |
 | GET | `/proposals` | Λίστα proposals |
 | GET | `/proposals/{id}` | Λεπτομέρειες proposal |
@@ -165,6 +166,7 @@ make test
 |----------|---------|-----------|
 | `WORDPRESS_PER_PAGE` | `100` | Items ανά WordPress REST page |
 | `WORDPRESS_MAX_PAGES` | `20` | Μέγιστες REST pages ανά content type |
+| `WORDPRESS_CACHE_TTL_SECONDS` | `300` | TTL για WordPress content/categories cache |
 | `GENERATED_CONTENT_DIR` | `generated_content` | Φάκελος για generated HTML |
 
 ## Παράδειγμα request
@@ -184,4 +186,4 @@ curl -X POST http://localhost:8000/workflow/run \
 - [ ] Alembic migrations
 - [x] WordPress pagination για όλες τις σελίδες
 - [x] Approval/reject endpoints
-- [ ] Content deduplication scoring
+- [x] Content deduplication scoring

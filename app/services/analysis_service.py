@@ -1,6 +1,7 @@
 import logging
 
 from app.prompts import build_geo_enhanced_prompt
+from app.services.deduplication_service import DeduplicationService
 from app.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -9,6 +10,7 @@ logger = logging.getLogger(__name__)
 class AnalysisService:
     def __init__(self) -> None:
         self.llm_service = LLMService()
+        self.deduplication_service = DeduplicationService()
 
     def gap_analysis(
         self,
@@ -38,6 +40,7 @@ class AnalysisService:
             "category_name": category_name,
             "clusters": clusters,
             "site_pages": compact_pages,
+            "duplicate_risks": self._cluster_duplicate_risks(clusters, site_pages),
         }
 
         # Build GEO-enhanced prompt with all analysis data
@@ -93,13 +96,71 @@ class AnalysisService:
             )
             result["proposals"] = proposals
 
+        result["proposals"] = self._annotate_duplicate_risks(proposals, site_pages)
+
         logger.info(
             "Gap analysis complete: category=%s, proposals=%d",
             category_name,
-            len(proposals),
+            len(result["proposals"]),
         )
 
         return result
+
+    def _cluster_duplicate_risks(self, clusters: list[dict], site_pages: list[dict]) -> list[dict]:
+        risks = []
+        for cluster in clusters[:10]:
+            cluster_text = " ".join([
+                cluster.get("name", ""),
+                " ".join(cluster.get("keywords", [])),
+            ])
+            match = self.deduplication_service.find_best_match(cluster_text, site_pages)
+            if match and match["risk"] != "low":
+                risks.append({
+                    "cluster": cluster.get("name"),
+                    "keywords": cluster.get("keywords", []),
+                    "duplicate_score": match["score"],
+                    "duplicate_risk": match["risk"],
+                    "matching_page": match["page"],
+                })
+        return risks
+
+    def _annotate_duplicate_risks(
+        self,
+        proposals: list[dict],
+        site_pages: list[dict],
+    ) -> list[dict]:
+        annotated = []
+        for proposal in proposals:
+            proposal_text = " ".join([
+                proposal.get("target_title", ""),
+                proposal.get("summary", ""),
+                " ".join(proposal.get("outline", [])) if isinstance(proposal.get("outline"), list) else str(proposal.get("outline", "")),
+            ])
+            match = self.deduplication_service.find_best_match(proposal_text, site_pages)
+            if not match:
+                annotated.append(proposal)
+                continue
+
+            proposal["duplicate_check"] = match
+            if match["risk"] == "high" and proposal.get("proposal_type") in {
+                "create_satellite_post",
+                "create_pillar_page",
+                "create_new_page",
+                "create_new_category",
+            }:
+                proposal["priority"] = "low"
+                proposal["summary"] = (
+                    f"[Πιθανό duplicate με {match['page'].get('title')}] "
+                    f"{proposal.get('summary', '')}"
+                )
+                proposal["seo_meta_suggestions"] = {
+                    **(proposal.get("seo_meta_suggestions") if isinstance(proposal.get("seo_meta_suggestions"), dict) else {}),
+                    "duplicate_check": match,
+                    "recommendation": "Προτιμήστε update ή internal linking αντί για νέο content.",
+                }
+            annotated.append(proposal)
+
+        return annotated
 
     def _fallback_proposals(
         self,

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     WORDPRESS_TIMEOUT: int = 30
     WORDPRESS_PER_PAGE: int = 100
     WORDPRESS_MAX_PAGES: int = 20
+    WORDPRESS_CACHE_TTL_SECONDS: int = 300
 
     GENERATED_CONTENT_DIR: str = "generated_content"
 

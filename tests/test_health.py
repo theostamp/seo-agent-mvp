@@ -8,6 +8,8 @@ from app.database import Base, get_db
 from app.main import app
 from app.models import ContentProposal, WorkflowRun
 from app.services.analysis_service import AnalysisService
+from app.services.deduplication_service import DeduplicationService
+from app.services.homepage_service import HomepageService
 from app.services.wordpress_service import WordPressService
 
 
@@ -138,6 +140,8 @@ def test_site_audit_returns_deterministic_summary(monkeypatch):
             "slug": "home",
             "url": "https://example.test",
             "post_type": "page",
+            "content": "Επικοινωνήστε μαζί μας για υπηρεσίες θέρμανσης.",
+            "internal_links": ["/services"],
             "yoast": {"available": True, "schema_types": ["WebSite"]},
         },
         {
@@ -210,6 +214,7 @@ def test_site_audit_returns_deterministic_summary(monkeypatch):
     assert data["site_pages_found"] == 2
     assert data["post_type_counts"] == {"page": 1, "post": 1}
     assert data["topology"]["orphans_count"] == 1
+    assert data["homepage"]["found"] is True
     assert data["yoast"]["total_issues"] == 2
     assert data["schema"]["ai_readiness_score"] == 25.0
 
@@ -221,6 +226,7 @@ def test_gap_analysis_returns_fallback_proposals_when_llm_is_empty():
 
     service = AnalysisService.__new__(AnalysisService)
     service.llm_service = EmptyLLM()
+    service.deduplication_service = DeduplicationService()
 
     result = service.gap_analysis(
         category_name="Επισκευή μπαλκονιών",
@@ -257,3 +263,190 @@ def test_gap_analysis_returns_fallback_proposals_when_llm_is_empty():
     assert len(proposals) == 2
     assert proposals[0]["proposal_type"] == "improve_seo_meta"
     assert proposals[1]["proposal_type"] == "add_faq_section"
+
+
+def test_gap_analysis_marks_high_duplicate_create_proposals():
+    class DuplicateLLM:
+        def generate_json(self, prompt, payload):
+            return {
+                "proposals": [
+                    {
+                        "proposal_type": "create_satellite_post",
+                        "target_title": "Στεγάνωση μπαλκονιού",
+                        "summary": "Νέο άρθρο για στεγάνωση μπαλκονιού",
+                        "outline": ["Στεγάνωση μπαλκονιού", "Κόστος"],
+                        "suggested_schema": ["Article"],
+                        "priority": "high",
+                    }
+                ]
+            }
+
+    service = AnalysisService.__new__(AnalysisService)
+    service.llm_service = DuplicateLLM()
+    service.deduplication_service = DeduplicationService()
+
+    result = service.gap_analysis(
+        category_name="Στεγάνωση",
+        clusters=[],
+        site_pages=[
+            {
+                "title": "Στεγάνωση μπαλκονιού",
+                "slug": "steganosi-mpalkoniou",
+                "url": "https://example.test/steganosi-mpalkoniou",
+                "post_type": "post",
+                "excerpt": "Στεγάνωση μπαλκονιού και κόστος εργασιών.",
+                "content": "Στεγάνωση μπαλκονιού με αναλυτική διαδικασία και τιμές.",
+                "yoast": {},
+            }
+        ],
+    )
+
+    proposal = result["proposals"][0]
+    assert proposal["duplicate_check"]["risk"] == "high"
+    assert proposal["priority"] == "low"
+    assert "Πιθανό duplicate" in proposal["summary"]
+
+
+def test_wordpress_fetch_all_content_uses_cache(monkeypatch):
+    WordPressService.clear_cache()
+    calls = {"pages": 0, "posts": 0}
+
+    service = WordPressService(base_url="https://example.test")
+
+    def fake_fetch_pages():
+        calls["pages"] += 1
+        return [{"title": "Page", "slug": "page"}]
+
+    def fake_fetch_posts():
+        calls["posts"] += 1
+        return [{"title": "Post", "slug": "post"}]
+
+    monkeypatch.setattr(service, "fetch_pages", fake_fetch_pages)
+    monkeypatch.setattr(service, "fetch_posts", fake_fetch_posts)
+
+    first = service.fetch_all_content()
+    second = service.fetch_all_content()
+
+    assert first == second
+    assert calls == {"pages": 1, "posts": 1}
+
+
+def test_clear_site_cache_endpoint():
+    response = client.post("/site/cache/clear", params={"site_url": "https://example.test"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_homepage_service_flags_bulk_content_and_weak_links():
+    long_content = " ".join(["υπηρεσία"] * 1100)
+    pages = [
+        {
+            "title": "Αρχική",
+            "slug": "home",
+            "url": "https://example.test",
+            "post_type": "page",
+            "is_front_page": True,
+            "content": long_content,
+            "internal_links": ["/service-a"],
+        }
+    ]
+    topology = {
+        "homepage": {"slug": "home"},
+        "pillars": [
+            {"title": "Service A", "slug": "service-a", "url": "https://example.test/service-a"},
+            {"title": "Service B", "slug": "service-b", "url": "https://example.test/service-b"},
+            {"title": "Service C", "slug": "service-c", "url": "https://example.test/service-c"},
+        ],
+    }
+
+    analysis = HomepageService().analyze(pages, topology)
+    issue_types = {issue["type"] for issue in analysis["issues"]}
+
+    assert analysis["found"] is True
+    assert analysis["metrics"]["word_count"] == 1100
+    assert "homepage_too_long" in issue_types
+    assert "few_homepage_internal_links" in issue_types
+    assert "few_pillar_links" in issue_types
+
+
+def test_homepage_service_builds_structured_guidance():
+    pages = [
+        {
+            "title": "Αρχική",
+            "slug": "home",
+            "url": "https://example.test",
+            "post_type": "page",
+            "is_front_page": True,
+            "content": "Επικοινωνήστε μαζί μας για άμεση τεχνική υποστήριξη.",
+            "internal_links": [],
+        }
+    ]
+    topology = {
+        "homepage": {"slug": "home"},
+        "pillars": [
+            {"title": "Συντήρηση λέβητα", "slug": "syntirisi-levita", "url": "https://example.test/syntirisi-levita"},
+        ],
+        "satellites": [],
+        "orphans": [],
+    }
+
+    guidance = HomepageService().build_guidance(pages, topology)
+
+    assert guidance["homepage_analysis"]["found"] is True
+    assert guidance["architecture"]["recommended_sections"]
+    assert guidance["semantic"]["meaning_rules"]
+    assert guidance["internal_link_plan"]["missing_priority_links"][0]["slug"] == "syntirisi-levita"
+    assert guidance["action_plan"]
+
+
+def test_homepage_guidance_endpoint_returns_plan(monkeypatch):
+    pages = [
+        {
+            "title": "Home",
+            "slug": "home",
+            "url": "https://example.test",
+            "post_type": "page",
+            "is_front_page": True,
+            "content": "Επικοινωνήστε μαζί μας για υπηρεσίες θέρμανσης.",
+            "internal_links": [],
+            "yoast": {"available": True, "schema_types": ["WebSite"]},
+        }
+    ]
+
+    class FakeWordPressService:
+        def __init__(self, base_url=None) -> None:
+            self.base_url = base_url or "https://example.test"
+
+        def fetch_all_content(self):
+            return pages
+
+        def fetch_categories(self):
+            return {}
+
+    class FakeTopologyService:
+        def analyze_topology(self, site_pages, categories):
+            return {
+                "homepage": {"title": "Home", "slug": "home"},
+                "pillars": [
+                    {
+                        "title": "Service",
+                        "slug": "service",
+                        "url": "https://example.test/service",
+                    }
+                ],
+                "satellites": [],
+                "orphans": [],
+            }
+
+    monkeypatch.setattr("app.api.routes.WordPressService", FakeWordPressService)
+    monkeypatch.setattr("app.api.routes.TopologyService", FakeTopologyService)
+
+    response = client.get("/site/homepage-guidance", params={"site_url": "https://example.test"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["site_pages_found"] == 1
+    assert data["guidance"]["homepage_analysis"]["found"] is True
+    assert data["guidance"]["architecture"]["recommended_sections"]
+    assert data["guidance"]["action_plan"]

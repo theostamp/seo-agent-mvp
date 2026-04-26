@@ -73,7 +73,13 @@ def update_proposal_status(api_url: str, proposal_id: int, status: str) -> None:
 
 
 # Main tabs
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 Νέα Ανάλυση", "📋 Proposals", "🔍 Preview", "📊 Site Audit"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🚀 Νέα Ανάλυση",
+    "📋 Proposals",
+    "🔍 Preview",
+    "📊 Site Audit",
+    "🏠 Αρχική Σελίδα",
+])
 
 # Tab 1: New Analysis
 with tab1:
@@ -288,15 +294,55 @@ with tab2:
 with tab3:
     st.header("🔍 Preview - Σύγκριση Υπάρχοντος vs Προτεινόμενου")
 
-    # Manual proposal ID input or from session state
+    preview_proposals = []
+    preview_proposals_error = None
+    try:
+        proposals_response = requests.get(f"{api_url}/proposals", timeout=10)
+        if proposals_response.status_code == 200:
+            preview_proposals = proposals_response.json()
+        else:
+            preview_proposals_error = f"{proposals_response.status_code} - {proposals_response.text}"
+    except requests.exceptions.ConnectionError:
+        preview_proposals_error = "Δεν μπορώ να συνδεθώ στο API"
+    except Exception as e:
+        preview_proposals_error = str(e)
+
+    # Proposal selector or manual fallback
     col1, col2, col3 = st.columns([2, 1, 1])
+    proposal_ids = []
     with col1:
-        preview_id = st.number_input(
-            "Proposal ID",
-            min_value=1,
-            value=st.session_state.preview_proposal_id or 1,
-            step=1
-        )
+        if preview_proposals:
+            proposal_labels = {
+                f"#{prop['id']} - {prop['target_title']} ({prop['proposal_type']}, {prop['status']})": prop
+                for prop in preview_proposals
+            }
+            proposal_ids = [prop["id"] for prop in preview_proposals]
+            selected_index = 0
+            if st.session_state.preview_proposal_id in proposal_ids:
+                selected_index = proposal_ids.index(st.session_state.preview_proposal_id)
+
+            selected_label = st.selectbox(
+                "Πρόταση",
+                options=list(proposal_labels.keys()),
+                index=selected_index,
+                help="Επέλεξε proposal με βάση τον τίτλο αντί να ψάχνεις το ID",
+            )
+            selected_proposal = proposal_labels[selected_label]
+            preview_id = selected_proposal["id"]
+            st.caption(
+                f"ID: `{preview_id}` | Τύπος: `{selected_proposal['proposal_type']}` | "
+                f"Status: `{selected_proposal['status']}`"
+            )
+        else:
+            if preview_proposals_error:
+                st.warning(f"Δεν φορτώθηκαν proposals: {preview_proposals_error}")
+            preview_id = st.number_input(
+                "Proposal ID",
+                min_value=1,
+                value=st.session_state.preview_proposal_id or 1,
+                step=1,
+                help="Fallback χειροκίνητης επιλογής όταν δεν φορτώνει η λίστα proposals",
+            )
     with col2:
         generate_btn = st.button("🚀 Preview", type="primary", use_container_width=True)
     with col3:
@@ -313,6 +359,8 @@ with tab3:
 
     if generate_btn or st.session_state.preview_proposal_id:
         proposal_id = preview_id if generate_btn else st.session_state.preview_proposal_id
+        if preview_proposals and proposal_id not in proposal_ids:
+            proposal_id = preview_id
         st.session_state.preview_proposal_id = None  # Reset
 
         with st.spinner("Δημιουργία preview... (χρησιμοποιεί AI για τις προτάσεις)"):
@@ -575,11 +623,29 @@ with tab3:
 with tab4:
     st.header("Site Audit")
 
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         audit_include_pages = st.checkbox("Εμφάνιση λίστας σελίδων", value=False)
     with col2:
         run_audit_btn = st.button("📊 Εκτέλεση Audit", type="primary", use_container_width=True)
+    with col3:
+        clear_cache_btn = st.button("♻️ Καθαρισμός προσωρινής μνήμης", use_container_width=True)
+
+    if clear_cache_btn:
+        try:
+            response = requests.post(
+                f"{api_url}/site/cache/clear",
+                params={"site_url": site_url},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                st.success("Η προσωρινή μνήμη καθαρίστηκε")
+            else:
+                st.error(f"Σφάλμα καθαρισμού προσωρινής μνήμης: {response.status_code} - {response.text}")
+        except requests.exceptions.ConnectionError:
+            st.error("Δεν μπορώ να συνδεθώ στο API")
+        except Exception as e:
+            st.error(f"Σφάλμα καθαρισμού προσωρινής μνήμης: {str(e)}")
 
     if run_audit_btn:
         with st.spinner("Γίνεται γρήγορος έλεγχος του site..."):
@@ -613,6 +679,46 @@ with tab4:
                             for page in orphan_pages:
                                 st.markdown(f"- `{page.get('slug')}` - {page.get('title')}")
 
+                    with st.expander("Homepage", expanded=True):
+                        homepage = audit.get("homepage", {})
+                        if homepage.get("found"):
+                            metrics = homepage.get("metrics", {})
+                            col1, col2, col3, col4, col5 = st.columns(5)
+                            col1.metric("Score", f"{homepage.get('score', 0)}/100")
+                            col2.metric("Λέξεις", metrics.get("word_count", 0))
+                            col3.metric("Internal Links", metrics.get("internal_links_count", 0))
+                            col4.metric("Pillar Links", metrics.get("linked_pillars_count", 0))
+                            col5.metric("CTA", "Ναι" if metrics.get("has_cta") else "Όχι")
+
+                            st.caption(
+                                f"Ύφος προσφώνησης: `{metrics.get('detected_addressing', 'unknown')}`"
+                            )
+
+                            issues = homepage.get("issues", [])
+                            if issues:
+                                st.markdown("**Θέματα:**")
+                                for issue in issues:
+                                    st.markdown(
+                                        f"- **{issue.get('severity', 'n/a')}** "
+                                        f"`{issue.get('type', 'issue')}`: {issue.get('message', '')}"
+                                    )
+
+                            recommendations = homepage.get("recommendations", [])
+                            if recommendations:
+                                st.markdown("**Προτάσεις διαχείρισης αρχικής:**")
+                                for recommendation in recommendations:
+                                    st.markdown(f"- {recommendation}")
+
+                            linked_pillars = homepage.get("linked_pillars", [])
+                            if linked_pillars:
+                                st.markdown("**Pillars που συνδέονται από την αρχική:**")
+                                for pillar in linked_pillars:
+                                    st.markdown(f"- `{pillar.get('slug')}` - {pillar.get('title')}")
+                        else:
+                            st.warning("Δεν εντοπίστηκε αρχική σελίδα στο audit.")
+                            for recommendation in homepage.get("recommendations", []):
+                                st.markdown(f"- {recommendation}")
+
                     with st.expander("Yoast Priorities", expanded=True):
                         priorities = audit.get("yoast", {}).get("priority_pages", [])
                         if priorities:
@@ -645,6 +751,123 @@ with tab4:
                 st.error("Δεν μπορώ να συνδεθώ στο API")
             except Exception as e:
                 st.error(f"Σφάλμα audit: {str(e)}")
+
+# Tab 5: Homepage Guidance
+with tab5:
+    st.header("Οδηγίες Διόρθωσης Αρχικής Σελίδας")
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.caption(f"Site: {site_url}")
+    with col2:
+        run_homepage_guidance_btn = st.button(
+            "🏠 Δημιουργία οδηγιών αρχικής",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if run_homepage_guidance_btn:
+        with st.spinner("Ανάλυση αρχικής σελίδας και συνολικής αρχιτεκτονικής..."):
+            try:
+                response = requests.get(
+                    f"{api_url}/site/homepage-guidance",
+                    params={"site_url": site_url},
+                    timeout=120,
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    guidance = data.get("guidance", {})
+                    homepage_analysis = guidance.get("homepage_analysis", {})
+
+                    st.success(f"Οδηγίες έτοιμες για {data.get('site_url')}")
+
+                    if homepage_analysis.get("found"):
+                        metrics = homepage_analysis.get("metrics", {})
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        col1.metric("Homepage Score", f"{homepage_analysis.get('score', 0)}/100")
+                        col2.metric("Λέξεις", metrics.get("word_count", 0))
+                        col3.metric("Internal Links", metrics.get("internal_links_count", 0))
+                        col4.metric("Pillar Links", metrics.get("linked_pillars_count", 0))
+                        col5.metric("CTA", "Ναι" if metrics.get("has_cta") else "Όχι")
+                    else:
+                        st.warning("Δεν εντοπίστηκε αρχική σελίδα στο WordPress content.")
+
+                    architecture = guidance.get("architecture", {})
+                    st.subheader("Αρχιτεκτονική Δομή")
+                    st.markdown(f"**Ρόλος αρχικής:** {architecture.get('role', '')}")
+                    st.markdown(f"**Στόχος μήκους:** {architecture.get('target_length', '')}")
+
+                    for section in architecture.get("recommended_sections", []):
+                        with st.expander(f"{section.get('order')}. {section.get('name')}", expanded=False):
+                            st.markdown(f"**Σκοπός:** {section.get('purpose', '')}")
+                            st.markdown(f"**Οδηγία περιεχομένου:** {section.get('content_instruction', '')}")
+
+                    semantic = guidance.get("semantic", {})
+                    st.subheader("Νοηματική Διόρθωση")
+                    st.markdown(f"**Κεντρικό μήνυμα:** {semantic.get('core_message', '')}")
+                    tone = semantic.get("tone", {})
+                    st.markdown(f"**Ύφος/προσφώνηση:** `{tone.get('addressing', 'unknown')}`")
+                    st.caption(tone.get("instruction", ""))
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Κανόνες νοήματος:**")
+                        for rule in semantic.get("meaning_rules", []):
+                            st.markdown(f"- {rule}")
+                    with col2:
+                        st.markdown("**Να αποφευχθούν:**")
+                        for item in semantic.get("avoid", []):
+                            st.markdown(f"- {item}")
+
+                    link_plan = guidance.get("internal_link_plan", {})
+                    st.subheader("Πλάνο Internal Links")
+                    st.markdown(link_plan.get("target", ""))
+                    st.caption(link_plan.get("anchor_text_rule", ""))
+
+                    missing_links = link_plan.get("missing_priority_links", [])
+                    if missing_links:
+                        st.markdown("**Προτεραιότητα για links από την αρχική:**")
+                        for link in missing_links:
+                            st.markdown(f"- `{link.get('slug')}` - {link.get('title')}")
+
+                    allocation = guidance.get("content_allocation", {})
+                    st.subheader("Κατανομή Περιεχομένου")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.markdown("**Μένει στην αρχική:**")
+                        for item in allocation.get("keep_on_homepage", []):
+                            st.markdown(f"- {item}")
+                    with col2:
+                        st.markdown("**Μεταφέρεται σε pillars:**")
+                        move_items = allocation.get("move_to_pillar_pages", [])
+                        if move_items:
+                            for item in move_items:
+                                st.markdown(f"- {item}")
+                        else:
+                            st.caption("Δεν απαιτείται μεταφορά βάσει μήκους.")
+                    with col3:
+                        st.markdown("**Υποστήριξη από satellites/orphans:**")
+                        support_items = allocation.get("support_with_satellites", []) + allocation.get("review_orphans_for_linking", [])
+                        if support_items:
+                            for item in support_items[:8]:
+                                st.markdown(f"- {item}")
+                        else:
+                            st.caption("Δεν βρέθηκαν σχετικά items.")
+
+                    st.subheader("Action Plan")
+                    for action in guidance.get("action_plan", []):
+                        with st.expander(f"{action.get('priority', 'n/a').upper()} - {action.get('area', '')}", expanded=True):
+                            st.markdown(f"**Τι κάνουμε:** {action.get('instruction', '')}")
+                            st.markdown(f"**Γιατί:** {action.get('reason', '')}")
+                else:
+                    st.error(f"Σφάλμα οδηγιών αρχικής: {response.status_code} - {response.text}")
+            except requests.exceptions.Timeout:
+                st.error("Timeout - η ανάλυση αρχικής πήρε πολύ χρόνο")
+            except requests.exceptions.ConnectionError:
+                st.error("Δεν μπορώ να συνδεθώ στο API")
+            except Exception as e:
+                st.error(f"Σφάλμα οδηγιών αρχικής: {str(e)}")
 
 # Footer
 st.divider()

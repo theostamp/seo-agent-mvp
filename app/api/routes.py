@@ -19,6 +19,7 @@ from app.schemas import (
     YoastSummaryOut,
 )
 from app.services.content_generator import ContentGenerator
+from app.services.homepage_service import HomepageService
 from app.services.proposal_service import ProposalService
 from app.services.schema_analyzer import SchemaAnalyzer
 from app.services.topology_service import TopologyService
@@ -63,6 +64,7 @@ def audit_site(site_url: str | None = None, include_pages: bool = False) -> dict
 
         topology_service = TopologyService()
         topology = topology_service.analyze_topology(site_pages, categories)
+        homepage_analysis = HomepageService().analyze(site_pages, topology)
 
         yoast_service = YoastService()
         yoast_analysis = yoast_service.analyze_seo_data(site_pages)
@@ -87,6 +89,7 @@ def audit_site(site_url: str | None = None, include_pages: bool = False) -> dict
                     for p in topology.get("orphans", [])[:20]
                 ],
             },
+            "homepage": homepage_analysis,
             "yoast": {
                 "pages_with_yoast": yoast_analysis.get("pages_with_yoast", 0),
                 "pages_without_yoast": yoast_analysis.get("pages_without_yoast", 0),
@@ -120,6 +123,40 @@ def audit_site(site_url: str | None = None, include_pages: bool = False) -> dict
     except Exception as e:
         logger.exception("Site audit failed")
         raise HTTPException(status_code=500, detail=f"Site audit failed: {str(e)}")
+
+
+@router.get("/site/homepage-guidance")
+def homepage_guidance(site_url: str | None = None) -> dict:
+    """
+    Build a homepage-specific correction plan from site-wide content and topology.
+    """
+    logger.info("Starting homepage guidance for site: %s", site_url or "default")
+
+    try:
+        wp = WordPressService(base_url=site_url)
+        site_pages = wp.fetch_all_content()
+        categories = wp.fetch_categories()
+        topology = TopologyService().analyze_topology(site_pages, categories)
+        guidance = HomepageService().build_guidance(site_pages, topology)
+
+        return {
+            "site_url": site_url or wp.base_url,
+            "site_pages_found": len(site_pages),
+            "guidance": guidance,
+        }
+    except Exception as e:
+        logger.exception("Homepage guidance failed")
+        raise HTTPException(status_code=500, detail=f"Homepage guidance failed: {str(e)}")
+
+
+@router.post("/site/cache/clear")
+def clear_site_cache(site_url: str | None = None) -> dict:
+    WordPressService.clear_cache(site_url)
+    return {
+        "status": "ok",
+        "message": "WordPress cache cleared",
+        "site_url": site_url,
+    }
 
 
 @router.post("/workflow/run", response_model=WorkflowOutput)

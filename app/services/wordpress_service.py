@@ -1,5 +1,7 @@
 import logging
 import re
+import time
+from copy import deepcopy
 from urllib.parse import urlparse
 
 import requests
@@ -9,6 +11,9 @@ from app.config import settings
 from app.utils.text import strip_html
 
 logger = logging.getLogger(__name__)
+
+_content_cache: dict[str, tuple[float, list[dict]]] = {}
+_category_cache: dict[str, tuple[float, dict[int, str]]] = {}
 
 
 class WordPressService:
@@ -134,12 +139,25 @@ class WordPressService:
             temp_service = WordPressService(base_url=site_url)
             return temp_service.fetch_all_content()
 
+        cache_key = self.base_url
+        cached = self._get_cached_content(cache_key)
+        if cached is not None:
+            logger.info("WordPress content cache hit for %s (%d items)", cache_key, len(cached))
+            return cached
+
         pages = self.fetch_pages()
         posts = self.fetch_posts()
-        return pages + posts
+        content = pages + posts
+        self._set_cached_content(cache_key, content)
+        return content
 
     def fetch_categories(self) -> dict[int, str]:
         """Fetch all categories and return id->name mapping."""
+        cached = self._get_cached_categories(self.base_url)
+        if cached is not None:
+            logger.info("WordPress categories cache hit for %s (%d items)", self.base_url, len(cached))
+            return cached
+
         categories = {}
         page = 1
 
@@ -159,7 +177,49 @@ class WordPressService:
             page += 1
 
         logger.info("Fetched %d categories from WordPress", len(categories))
+        self._set_cached_categories(self.base_url, categories)
         return categories
+
+    @classmethod
+    def clear_cache(cls, base_url: str | None = None) -> None:
+        if base_url:
+            key = base_url.rstrip("/")
+            _content_cache.pop(key, None)
+            _category_cache.pop(key, None)
+            return
+
+        _content_cache.clear()
+        _category_cache.clear()
+
+    def _get_cached_content(self, cache_key: str) -> list[dict] | None:
+        cached = _content_cache.get(cache_key)
+        if not self._is_cache_fresh(cached):
+            _content_cache.pop(cache_key, None)
+            return None
+        return deepcopy(cached[1])
+
+    def _set_cached_content(self, cache_key: str, content: list[dict]) -> None:
+        if settings.WORDPRESS_CACHE_TTL_SECONDS <= 0:
+            return
+        _content_cache[cache_key] = (time.time(), deepcopy(content))
+
+    def _get_cached_categories(self, cache_key: str) -> dict[int, str] | None:
+        cached = _category_cache.get(cache_key)
+        if not self._is_cache_fresh(cached):
+            _category_cache.pop(cache_key, None)
+            return None
+        return dict(cached[1])
+
+    def _set_cached_categories(self, cache_key: str, categories: dict[int, str]) -> None:
+        if settings.WORDPRESS_CACHE_TTL_SECONDS <= 0:
+            return
+        _category_cache[cache_key] = (time.time(), dict(categories))
+
+    def _is_cache_fresh(self, cached: tuple[float, object] | None) -> bool:
+        if cached is None or settings.WORDPRESS_CACHE_TTL_SECONDS <= 0:
+            return False
+        cached_at, _ = cached
+        return (time.time() - cached_at) < settings.WORDPRESS_CACHE_TTL_SECONDS
 
     def _parse_wp_item(self, item: dict, post_type: str) -> dict:
         content_html = item.get("content", {}).get("rendered", "")
