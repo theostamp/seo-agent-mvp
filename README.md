@@ -144,6 +144,8 @@ make up
 |--------|------|-----------|
 | GET | `/health` | Health check |
 | GET | `/site/audit` | Γρήγορο audit WordPress content, topology, Yoast και schema |
+| GET | `/site/homepage-guidance` | Deterministic οδηγίες για αρχιτεκτονική, περιεχόμενο και links της αρχικής |
+| POST | `/site/homepage-generate` | AI πρόταση νέας δομής, draft copy, αισθητικής, links και Yoast meta για την αρχική |
 | POST | `/site/cache/clear` | Καθαρισμός WordPress content/categories cache |
 | POST | `/workflow/run` | Εκτέλεση workflow |
 | GET | `/proposals` | Λίστα proposals |

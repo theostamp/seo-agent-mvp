@@ -400,6 +400,84 @@ def test_homepage_service_builds_structured_guidance():
     assert guidance["action_plan"]
 
 
+def test_homepage_service_generates_ai_plan_with_custom_instructions():
+    captured = {}
+
+    class FakeLLM:
+        def generate_json(self, prompt, payload):
+            captured["prompt"] = prompt
+            captured["payload"] = payload
+            return {
+                "homepage_strategy": {
+                    "primary_goal": "Να οδηγεί στις βασικές υπηρεσίες",
+                    "positioning": "Αξιόπιστη τεχνική ομάδα",
+                    "target_audience": "Ιδιοκτήτες κατοικιών",
+                    "content_role": "Homepage hub",
+                },
+                "section_plan": [
+                    {
+                        "order": 1,
+                        "section": "Hero",
+                        "heading": "Άμεση τεχνική υποστήριξη",
+                        "goal": "Να εξηγεί την αξία",
+                        "content_notes": "Σύντομο hero",
+                        "links": [],
+                        "visual_notes": "Καθαρό CTA",
+                    }
+                ],
+                "draft_copy": {
+                    "hero_h1": "Άμεση τεχνική υποστήριξη",
+                    "hero_subtitle": "Σύντομη πρόταση αξίας.",
+                    "primary_cta": "Ζητήστε προσφορά",
+                    "service_blocks": [],
+                    "trust_section": "Έμπειρη ομάδα.",
+                    "final_cta": "Επικοινωνήστε μαζί μας.",
+                },
+                "internal_link_plan": [],
+                "visual_guidance": [],
+                "yoast_meta": {
+                    "meta_title": "Τεχνικές Υπηρεσίες",
+                    "meta_description": "Άμεση υποστήριξη για τεχνικές υπηρεσίες.",
+                    "focus_keyphrase": "τεχνικές υπηρεσίες",
+                },
+                "implementation_checklist": ["Ένα H1"],
+            }
+
+    pages = [
+        {
+            "title": "Αρχική",
+            "slug": "home",
+            "url": "https://example.test",
+            "post_type": "page",
+            "is_front_page": True,
+            "content": "Επικοινωνήστε μαζί μας για άμεση τεχνική υποστήριξη.",
+            "internal_links": [],
+        }
+    ]
+    topology = {
+        "homepage": {"slug": "home"},
+        "pillars": [
+            {"title": "Συντήρηση λέβητα", "slug": "syntirisi-levita", "url": "https://example.test/syntirisi-levita"},
+        ],
+        "satellites": [],
+        "orphans": [],
+    }
+
+    result = HomepageService().generate_ai_homepage_plan(
+        pages,
+        topology,
+        custom_instructions="Δώσε έμφαση στην άμεση εξυπηρέτηση",
+        llm_service=FakeLLM(),
+    )
+
+    assert result["source"] == "ai"
+    assert result["draft_copy"]["hero_h1"] == "Άμεση τεχνική υποστήριξη"
+    assert result["deterministic_guidance"]["homepage_analysis"]["found"] is True
+    assert captured["payload"]["custom_instructions"] == "Δώσε έμφαση στην άμεση εξυπηρέτηση"
+    assert captured["payload"]["main_pillars"][0]["slug"] == "syntirisi-levita"
+    assert "YOAST" in captured["prompt"]
+
+
 def test_homepage_guidance_endpoint_returns_plan(monkeypatch):
     pages = [
         {
@@ -450,3 +528,75 @@ def test_homepage_guidance_endpoint_returns_plan(monkeypatch):
     assert data["guidance"]["homepage_analysis"]["found"] is True
     assert data["guidance"]["architecture"]["recommended_sections"]
     assert data["guidance"]["action_plan"]
+
+
+def test_homepage_generate_endpoint_returns_ai_plan(monkeypatch):
+    pages = [
+        {
+            "title": "Home",
+            "slug": "home",
+            "url": "https://example.test",
+            "post_type": "page",
+            "is_front_page": True,
+            "content": "Επικοινωνήστε μαζί μας για υπηρεσίες θέρμανσης.",
+            "internal_links": [],
+        }
+    ]
+    captured = {}
+
+    class FakeWordPressService:
+        def __init__(self, base_url=None) -> None:
+            self.base_url = base_url or "https://example.test"
+
+        def fetch_all_content(self):
+            return pages
+
+        def fetch_categories(self):
+            return {}
+
+    class FakeTopologyService:
+        def analyze_topology(self, site_pages, categories):
+            return {
+                "homepage": {"title": "Home", "slug": "home"},
+                "pillars": [
+                    {
+                        "title": "Service",
+                        "slug": "service",
+                        "url": "https://example.test/service",
+                    }
+                ],
+                "satellites": [],
+                "orphans": [],
+            }
+
+    def fake_generate(self, site_pages, topology=None, style_profile=None, custom_instructions=None, llm_service=None):
+        captured["custom_instructions"] = custom_instructions
+        captured["topology"] = topology
+        return {
+            "source": "ai",
+            "homepage_strategy": {"primary_goal": "Test"},
+            "section_plan": [],
+            "draft_copy": {"hero_h1": "Test H1"},
+            "internal_link_plan": [],
+            "visual_guidance": [],
+            "yoast_meta": {"focus_keyphrase": "test"},
+            "implementation_checklist": [],
+        }
+
+    monkeypatch.setattr("app.api.routes.WordPressService", FakeWordPressService)
+    monkeypatch.setattr("app.api.routes.TopologyService", FakeTopologyService)
+    monkeypatch.setattr("app.api.routes.HomepageService.generate_ai_homepage_plan", fake_generate)
+
+    response = client.post(
+        "/site/homepage-generate",
+        params={"site_url": "https://example.test"},
+        json={"custom_instructions": "Κράτησε επαγγελματικό ύφος"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["site_pages_found"] == 1
+    assert data["result"]["source"] == "ai"
+    assert data["result"]["draft_copy"]["hero_h1"] == "Test H1"
+    assert captured["custom_instructions"] == "Κράτησε επαγγελματικό ύφος"
+    assert captured["topology"]["pillars"][0]["slug"] == "service"

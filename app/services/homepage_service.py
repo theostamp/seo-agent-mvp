@@ -1,6 +1,8 @@
 import re
 from urllib.parse import urlparse
 
+from app.prompts import HOMEPAGE_GENERATION_PROMPT
+
 
 WORD_RE = re.compile(r"[\wά-ώΆ-Ώ]+", re.UNICODE)
 
@@ -167,6 +169,234 @@ class HomepageService:
             "content_allocation": self._content_allocation(analysis, main_pillars, satellites, orphans),
             "action_plan": self._action_plan(analysis, main_pillars),
         }
+
+    def generate_ai_homepage_plan(
+        self,
+        site_pages: list[dict],
+        topology: dict | None = None,
+        style_profile: dict | None = None,
+        custom_instructions: str | None = None,
+        llm_service=None,
+    ) -> dict:
+        """
+        Generate an AI-assisted homepage structure and copy plan.
+
+        The deterministic guidance remains the source context and fallback. The LLM
+        is only invoked here so regular audits stay fast and testable.
+        """
+        guidance = self.build_guidance(site_pages, topology, style_profile)
+        payload = self._homepage_generation_payload(
+            site_pages=site_pages,
+            topology=topology,
+            style_profile=style_profile,
+            guidance=guidance,
+            custom_instructions=custom_instructions,
+        )
+
+        if llm_service is None:
+            from app.services.llm_service import LLMService
+            llm_service = LLMService()
+
+        ai_result = llm_service.generate_json(HOMEPAGE_GENERATION_PROMPT, payload)
+        normalized = self._normalize_ai_homepage_plan(ai_result)
+        if normalized:
+            normalized["source"] = "ai"
+            normalized["deterministic_guidance"] = guidance
+            return normalized
+
+        fallback = self._fallback_ai_homepage_plan(guidance)
+        fallback["source"] = "fallback"
+        fallback["deterministic_guidance"] = guidance
+        return fallback
+
+    def _homepage_generation_payload(
+        self,
+        site_pages: list[dict],
+        topology: dict | None,
+        style_profile: dict | None,
+        guidance: dict,
+        custom_instructions: str | None,
+    ) -> dict:
+        homepage = self._find_homepage(site_pages, topology)
+        pillars = (topology or {}).get("pillars", [])
+        satellites = (topology or {}).get("satellites", [])
+        orphans = (topology or {}).get("orphans", [])
+
+        return {
+            "custom_instructions": (custom_instructions or "").strip(),
+            "homepage_analysis": guidance.get("homepage_analysis", {}),
+            "deterministic_guidance": {
+                "architecture": guidance.get("architecture", {}),
+                "semantic": guidance.get("semantic", {}),
+                "internal_link_plan": guidance.get("internal_link_plan", {}),
+                "content_allocation": guidance.get("content_allocation", {}),
+                "action_plan": guidance.get("action_plan", {}),
+            },
+            "current_homepage": self._page_summary(homepage, include_excerpt=True) if homepage else None,
+            "main_pillars": [self._page_summary(page) for page in pillars[:10]],
+            "supporting_content_sample": [self._page_summary(page) for page in satellites[:10]],
+            "orphan_content_sample": [self._page_summary(page) for page in orphans[:8]],
+            "style_profile": style_profile or {},
+        }
+
+    def _normalize_ai_homepage_plan(self, result: dict | None) -> dict | None:
+        if not isinstance(result, dict) or not result:
+            return None
+
+        required = (
+            "homepage_strategy",
+            "section_plan",
+            "draft_copy",
+            "internal_link_plan",
+            "visual_guidance",
+            "yoast_meta",
+            "implementation_checklist",
+        )
+        if not any(key in result for key in required):
+            return None
+
+        draft_copy = result.get("draft_copy") if isinstance(result.get("draft_copy"), dict) else {}
+        yoast_meta = result.get("yoast_meta") if isinstance(result.get("yoast_meta"), dict) else {}
+
+        return {
+            "homepage_strategy": result.get("homepage_strategy") if isinstance(result.get("homepage_strategy"), dict) else {},
+            "section_plan": result.get("section_plan") if isinstance(result.get("section_plan"), list) else [],
+            "draft_copy": {
+                "hero_h1": draft_copy.get("hero_h1", ""),
+                "hero_subtitle": draft_copy.get("hero_subtitle", ""),
+                "primary_cta": draft_copy.get("primary_cta", ""),
+                "service_blocks": draft_copy.get("service_blocks") if isinstance(draft_copy.get("service_blocks"), list) else [],
+                "trust_section": draft_copy.get("trust_section", ""),
+                "final_cta": draft_copy.get("final_cta", ""),
+            },
+            "internal_link_plan": result.get("internal_link_plan") if isinstance(result.get("internal_link_plan"), list) else [],
+            "visual_guidance": result.get("visual_guidance") if isinstance(result.get("visual_guidance"), list) else [],
+            "yoast_meta": {
+                "meta_title": yoast_meta.get("meta_title", ""),
+                "meta_description": yoast_meta.get("meta_description", ""),
+                "focus_keyphrase": yoast_meta.get("focus_keyphrase", ""),
+            },
+            "implementation_checklist": (
+                result.get("implementation_checklist")
+                if isinstance(result.get("implementation_checklist"), list)
+                else []
+            ),
+        }
+
+    def _fallback_ai_homepage_plan(self, guidance: dict) -> dict:
+        architecture = guidance.get("architecture", {})
+        semantic = guidance.get("semantic", {})
+        link_plan = guidance.get("internal_link_plan", {})
+        pillars = architecture.get("pillar_targets", [])
+        priority_links = link_plan.get("missing_priority_links", []) or pillars[:6]
+
+        section_plan = []
+        for section in architecture.get("recommended_sections", []):
+            links = []
+            if section.get("name") == "Βασικές υπηρεσίες":
+                links = [
+                    {
+                        "label": pillar.get("title"),
+                        "url": pillar.get("url"),
+                    }
+                    for pillar in priority_links[:6]
+                ]
+            section_plan.append({
+                "order": section.get("order"),
+                "section": section.get("name"),
+                "heading": section.get("name"),
+                "goal": section.get("purpose"),
+                "content_notes": section.get("content_instruction"),
+                "links": links,
+                "visual_notes": self._visual_note_for_section(section.get("name")),
+            })
+
+        return {
+            "homepage_strategy": {
+                "primary_goal": "Να εξηγεί άμεσα την πρόταση αξίας και να οδηγεί τον χρήστη στις βασικές υπηρεσίες.",
+                "positioning": "Επαγγελματική, αξιόπιστη τεχνική λύση με καθαρή διαδρομή επικοινωνίας.",
+                "target_audience": "Επισκέπτες που αναζητούν τεχνική υπηρεσία και θέλουν γρήγορα να επιβεβαιώσουν αξιοπιστία.",
+                "content_role": architecture.get("role", ""),
+            },
+            "section_plan": section_plan,
+            "draft_copy": {
+                "hero_h1": "Τεχνικές υπηρεσίες με άμεση ανταπόκριση και αξιόπιστη υποστήριξη",
+                "hero_subtitle": semantic.get("core_message", ""),
+                "primary_cta": "Ζητήστε προσφορά",
+                "service_blocks": [
+                    {
+                        "title": pillar.get("title"),
+                        "text": "Σύντομη παρουσίαση της υπηρεσίας με έμφαση στο πρόβλημα που λύνει και στο αποτέλεσμα για τον πελάτη.",
+                        "link_url": pillar.get("url"),
+                        "anchor_text": pillar.get("title"),
+                    }
+                    for pillar in priority_links[:6]
+                ],
+                "trust_section": "Προσθέστε 3-5 σύντομα σημεία εμπιστοσύνης: εμπειρία, τεχνική επάρκεια, συνέπεια, εξυπηρέτηση και σαφή επικοινωνία.",
+                "final_cta": "Επικοινωνήστε μαζί μας για να αξιολογήσουμε τις ανάγκες σας και να προτείνουμε την κατάλληλη λύση.",
+            },
+            "internal_link_plan": [
+                {
+                    "target_title": pillar.get("title"),
+                    "target_url": pillar.get("url"),
+                    "anchor_text": pillar.get("title"),
+                    "placement": "Ενότητα βασικών υπηρεσιών",
+                    "reason": "Συνδέει την αρχική με βασικό pillar και ενισχύει την αρχιτεκτονική του site.",
+                }
+                for pillar in priority_links[:8]
+            ],
+            "visual_guidance": [
+                {
+                    "area": "Hero",
+                    "recommendation": "Καθαρός τίτλος, σύντομο supporting text, ένα εμφανές CTA και δευτερεύον link προς τις υπηρεσίες.",
+                    "reason": "Ο επισκέπτης πρέπει να καταλάβει την πρόταση αξίας χωρίς κύλιση.",
+                },
+                {
+                    "area": "Βασικές υπηρεσίες",
+                    "recommendation": "Χρησιμοποιήστε συμπαγές grid 4-8 υπηρεσιών με σύντομα κείμενα και ίδια οπτική βαρύτητα.",
+                    "reason": "Η αρχική πρέπει να λειτουργεί ως κόμβος επιλογής υπηρεσίας.",
+                },
+            ],
+            "yoast_meta": {
+                "meta_title": "Τεχνικές Υπηρεσίες | Άμεση Υποστήριξη",
+                "meta_description": "Δείτε βασικές τεχνικές υπηρεσίες, λύσεις και τρόπους επικοινωνίας για άμεση υποστήριξη από εξειδικευμένη ομάδα.",
+                "focus_keyphrase": "τεχνικές υπηρεσίες",
+            },
+            "implementation_checklist": [
+                "Κρατήστε ένα μόνο H1 στο hero.",
+                "Περιορίστε το συνολικό κείμενο της αρχικής στις 250-700 λέξεις.",
+                "Προσθέστε 4-8 links προς βασικές υπηρεσίες με περιγραφικά anchors.",
+                "Βάλτε CTA στο hero και στο τέλος της σελίδας.",
+                "Μεταφέρετε αναλυτικές τεχνικές εξηγήσεις σε pillars ή satellites.",
+            ],
+        }
+
+    def _page_summary(self, page: dict | None, include_excerpt: bool = False) -> dict:
+        if not page:
+            return {}
+
+        summary = {
+            "title": page.get("title"),
+            "slug": page.get("slug"),
+            "url": page.get("url"),
+            "post_type": page.get("post_type"),
+            "word_count": len(self._words(page.get("content", ""))),
+            "internal_links": page.get("internal_links", [])[:10],
+        }
+        if include_excerpt:
+            content = page.get("content", "")
+            summary["content_excerpt"] = content[:1200]
+        return summary
+
+    def _visual_note_for_section(self, section_name: str | None) -> str:
+        notes = {
+            "Hero": "Πάνω από το fold, με καθαρό H1, σύντομο κείμενο, κύριο CTA και ήρεμο οπτικό στοιχείο σχετικό με την υπηρεσία.",
+            "Βασικές υπηρεσίες": "Grid ή λίστα υπηρεσιών με σταθερή δομή, σύντομες περιγραφές και εμφανή links προς pillars.",
+            "Γιατί να μας επιλέξετε": "3-5 σύντομα σημεία εμπιστοσύνης με εικονίδια ή μικρούς αριθμούς, χωρίς μεγάλα paragraphs.",
+            "Περιοχές ή εξυπηρέτηση": "Σύντομη οριζόντια ενότητα με local relevance και link όπου υπάρχει σχετική σελίδα.",
+            "Τελικό CTA": "Απλή full-width ενότητα με μία πρόταση και ξεκάθαρο κουμπί/τηλέφωνο.",
+        }
+        return notes.get(section_name, "Κρατήστε σύντομη ενότητα με καθαρή ιεραρχία και μία συγκεκριμένη ενέργεια.")
 
     def _architecture_guidance(self, analysis: dict, pillars: list[dict]) -> dict:
         return {

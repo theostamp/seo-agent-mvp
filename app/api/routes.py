@@ -32,6 +32,11 @@ class GenerateHtmlRequest(BaseModel):
     custom_instructions: Optional[str] = None
 
 
+class HomepageGenerateRequest(BaseModel):
+    """Request body for AI homepage structure and copy generation."""
+    custom_instructions: Optional[str] = None
+
+
 class ProposalStatusUpdate(BaseModel):
     """Request body for manually reviewing a proposal."""
     status: Literal["needs_review", "approved", "rejected"]
@@ -147,6 +152,39 @@ def homepage_guidance(site_url: str | None = None) -> dict:
     except Exception as e:
         logger.exception("Homepage guidance failed")
         raise HTTPException(status_code=500, detail=f"Homepage guidance failed: {str(e)}")
+
+
+@router.post("/site/homepage-generate")
+def generate_homepage_plan(
+    request: HomepageGenerateRequest = None,
+    site_url: str | None = None,
+) -> dict:
+    """
+    Generate an AI-assisted homepage structure, draft copy, visual guidance, and Yoast meta plan.
+    """
+    logger.info("Starting AI homepage generation for site: %s", site_url or "default")
+
+    try:
+        wp = WordPressService(base_url=site_url)
+        site_pages = wp.fetch_all_content()
+        categories = wp.fetch_categories()
+        topology = TopologyService().analyze_topology(site_pages, categories)
+        custom_instructions = request.custom_instructions if request else None
+
+        result = HomepageService().generate_ai_homepage_plan(
+            site_pages=site_pages,
+            topology=topology,
+            custom_instructions=custom_instructions,
+        )
+
+        return {
+            "site_url": site_url or wp.base_url,
+            "site_pages_found": len(site_pages),
+            "result": result,
+        }
+    except Exception as e:
+        logger.exception("AI homepage generation failed")
+        raise HTTPException(status_code=500, detail=f"Homepage generation failed: {str(e)}")
 
 
 @router.post("/site/cache/clear")

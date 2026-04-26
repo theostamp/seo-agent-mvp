@@ -52,6 +52,8 @@ if "preview_proposal_id" not in st.session_state:
     st.session_state.preview_proposal_id = None
 if "generated_html_result" not in st.session_state:
     st.session_state.generated_html_result = None
+if "homepage_ai_result" not in st.session_state:
+    st.session_state.homepage_ai_result = None
 
 
 def update_proposal_status(api_url: str, proposal_id: int, status: str) -> None:
@@ -756,15 +758,152 @@ with tab4:
 with tab5:
     st.header("Οδηγίες Διόρθωσης Αρχικής Σελίδας")
 
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         st.caption(f"Site: {site_url}")
     with col2:
         run_homepage_guidance_btn = st.button(
-            "🏠 Δημιουργία οδηγιών αρχικής",
+            "🏠 Audit οδηγιών",
             type="primary",
             use_container_width=True,
         )
+    with col3:
+        generate_homepage_ai_btn = st.button(
+            "✨ Νέα δομή + κείμενο",
+            use_container_width=True,
+        )
+
+    homepage_custom_instructions = st.text_area(
+        "Συμπληρωματικές οδηγίες για την αρχική (προαιρετικό)",
+        placeholder="π.χ. Δώσε έμφαση σε άμεση εξυπηρέτηση, κράτησε αυστηρά επαγγελματικό ύφος, πρότεινε hero για Elementor, βάλε links προς συγκεκριμένες υπηρεσίες...",
+        help="Οι οδηγίες θα δοθούν στον AI agent μαζί με τα pillars, τα ευρήματα και τους κανόνες Google/Yoast.",
+        height=90,
+        key="homepage_custom_instructions",
+    )
+
+    if generate_homepage_ai_btn:
+        with st.spinner("Δημιουργία νέας δομής, draft copy, visual guidance και Yoast meta..."):
+            try:
+                request_body = {}
+                if homepage_custom_instructions and homepage_custom_instructions.strip():
+                    request_body["custom_instructions"] = homepage_custom_instructions.strip()
+
+                response = requests.post(
+                    f"{api_url}/site/homepage-generate",
+                    params={"site_url": site_url},
+                    json=request_body if request_body else None,
+                    timeout=180,
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    st.session_state.homepage_ai_result = data.get("result", {})
+                    st.success(f"Νέα πρόταση αρχικής έτοιμη για {data.get('site_url')}")
+                else:
+                    st.error(f"Σφάλμα AI πρότασης αρχικής: {response.status_code} - {response.text}")
+            except requests.exceptions.Timeout:
+                st.error("Timeout - η δημιουργία πρότασης αρχικής πήρε πολύ χρόνο")
+            except requests.exceptions.ConnectionError:
+                st.error("Δεν μπορώ να συνδεθώ στο API")
+            except Exception as e:
+                st.error(f"Σφάλμα AI πρότασης αρχικής: {str(e)}")
+
+    if st.session_state.homepage_ai_result:
+        result = st.session_state.homepage_ai_result
+        st.subheader("Προτεινόμενη Νέα Αρχική")
+        st.caption(f"Πηγή: `{result.get('source', 'ai')}`")
+
+        strategy = result.get("homepage_strategy", {})
+        if strategy:
+            with st.expander("Στρατηγική", expanded=True):
+                st.markdown(f"**Κύριος στόχος:** {strategy.get('primary_goal', '')}")
+                st.markdown(f"**Positioning:** {strategy.get('positioning', '')}")
+                st.markdown(f"**Κοινό:** {strategy.get('target_audience', '')}")
+                st.markdown(f"**Ρόλος αρχικής:** {strategy.get('content_role', '')}")
+
+        yoast_meta = result.get("yoast_meta", {})
+        if yoast_meta:
+            with st.expander("Yoast Meta", expanded=True):
+                st.markdown(f"**Meta Title:** `{yoast_meta.get('meta_title', '')}`")
+                st.caption(f"Χαρακτήρες: {len(yoast_meta.get('meta_title', ''))}")
+                st.markdown(f"**Meta Description:** {yoast_meta.get('meta_description', '')}")
+                st.caption(f"Χαρακτήρες: {len(yoast_meta.get('meta_description', ''))}")
+                st.markdown(f"**Focus Keyphrase:** `{yoast_meta.get('focus_keyphrase', '')}`")
+
+        draft = result.get("draft_copy", {})
+        if draft:
+            st.subheader("Draft Copy")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Hero H1**")
+                st.info(draft.get("hero_h1", ""))
+                st.markdown("**Hero Subtitle**")
+                st.write(draft.get("hero_subtitle", ""))
+            with col2:
+                st.markdown("**Primary CTA**")
+                st.success(draft.get("primary_cta", ""))
+                st.markdown("**Final CTA**")
+                st.write(draft.get("final_cta", ""))
+
+            service_blocks = draft.get("service_blocks", [])
+            if service_blocks:
+                with st.expander("Service Blocks", expanded=True):
+                    for block in service_blocks:
+                        st.markdown(f"**{block.get('title', '')}**")
+                        st.write(block.get("text", ""))
+                        if block.get("link_url"):
+                            st.caption(f"{block.get('anchor_text', block.get('title', 'Link'))}: {block.get('link_url')}")
+                        st.divider()
+
+            if draft.get("trust_section"):
+                with st.expander("Trust Section", expanded=False):
+                    st.write(draft.get("trust_section"))
+
+        section_plan = result.get("section_plan", [])
+        if section_plan:
+            st.subheader("Section Plan")
+            for section in section_plan:
+                label = f"{section.get('order', '')}. {section.get('section', section.get('heading', 'Section'))}"
+                with st.expander(label, expanded=False):
+                    st.markdown(f"**Heading:** {section.get('heading', '')}")
+                    st.markdown(f"**Σκοπός:** {section.get('goal', '')}")
+                    st.markdown(f"**Περιεχόμενο:** {section.get('content_notes', '')}")
+                    st.markdown(f"**Αισθητική/UX:** {section.get('visual_notes', '')}")
+                    links = section.get("links", [])
+                    if links:
+                        st.markdown("**Links:**")
+                        for link in links:
+                            st.markdown(f"- {link.get('label', '')}: {link.get('url', '')}")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            links = result.get("internal_link_plan", [])
+            if links:
+                st.subheader("Internal Link Plan")
+                for link in links:
+                    with st.expander(link.get("anchor_text", link.get("target_title", "Link")), expanded=False):
+                        st.markdown(f"**Σελίδα:** {link.get('target_title', '')}")
+                        st.markdown(f"**URL:** {link.get('target_url', '')}")
+                        st.markdown(f"**Placement:** {link.get('placement', '')}")
+                        st.markdown(f"**Γιατί:** {link.get('reason', '')}")
+        with col2:
+            visuals = result.get("visual_guidance", [])
+            if visuals:
+                st.subheader("Αισθητική / UX")
+                for item in visuals:
+                    with st.expander(item.get("area", "Area"), expanded=False):
+                        st.markdown(f"**Οδηγία:** {item.get('recommendation', '')}")
+                        st.markdown(f"**Γιατί:** {item.get('reason', '')}")
+
+        checklist = result.get("implementation_checklist", [])
+        if checklist:
+            st.subheader("Checklist Υλοποίησης")
+            for item in checklist:
+                st.checkbox(item, value=False, key=f"homepage_check_{hash(item)}")
+
+        if st.button("Καθαρισμός AI πρότασης αρχικής", use_container_width=True):
+            st.session_state.homepage_ai_result = None
+            st.rerun()
 
     if run_homepage_guidance_btn:
         with st.spinner("Ανάλυση αρχικής σελίδας και συνολικής αρχιτεκτονικής..."):
